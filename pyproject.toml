@@ -12,6 +12,7 @@ dependencies = [
     "fsspec>=2024.2.0",
     "jupyter>=1.1.1",
     "math-verify[antlr4-13-2]>=0.7.0",
+    "matplotlib>=3.8.0",
     "pylatexenc==2.10",
     "notebook>=7.4.2",
     "pytest>=8.3.5",
@@ -38,6 +39,7 @@ alpaca-eval = { git = "https://github.com/nelson-liu/alpaca_eval.git", rev = "fo
 [tool.pytest.ini_options]
 log_cli = true
 log_cli_level = "WARNING"
+testpaths = ["tests"]
 
 [[tool.uv.dependency-metadata]]
 name = "flash-attn"

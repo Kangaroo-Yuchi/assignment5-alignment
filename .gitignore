@@ -172,3 +172,13 @@ evaluation_results.jsonl
 # uv specific files
 uv.lock
 .idea/
+
+# Checkpoints
+checkpoints/
+checkpoints.tar.gz
+ei_final.tar.gz
+lr_sweep_results/
+.DS_Store
+
+# jsonl files
+*.jsonl

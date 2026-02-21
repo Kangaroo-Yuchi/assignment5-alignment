@@ -21,7 +21,9 @@ def evaluate_vllm(
     prompts: list[str],
     ground_truths: list[str],
     eval_sampling_params: SamplingParams,
-    step_number=0
+    step_number=0,
+    output_dir: str | Path = None,
+    lr_tag: str = None
     ) -> dict[str, float]:
 
     prompt_file = Path('cs336_alignment/prompts/r1_zero.prompt')
@@ -58,7 +60,14 @@ def evaluate_vllm(
     avg_format_reward = total_format_reward / len(prompts)
 
     # Serialize to disk as JSONL (one JSON object per line)
-    output_path = Path(f"rl_evaluation_results_step_{step_number}.jsonl")
+    filename = f"rl_evaluation_results_step_{step_number}.jsonl"
+    if lr_tag:
+        filename = f"rl_evaluation_results_lr_{lr_tag}_step_{step_number}.jsonl"
+    if output_dir:
+        output_path = Path(output_dir) / filename
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        output_path = Path(filename)
     with output_path.open('w') as f:
         for result in results:
             f.write(json.dumps(result) + '\n')
