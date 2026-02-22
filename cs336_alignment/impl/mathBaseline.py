@@ -23,7 +23,10 @@ def evaluate_vllm(
     eval_sampling_params: SamplingParams,
     step_number=0,
     output_dir: str | Path = None,
-    lr_tag: str = None
+    lr_tag: str = None,
+    wall_clock_time: float = 0.0,
+    mean_entropy: float | None = None,
+    mean_response_length: float | None = None,
     ) -> dict[str, float]:
 
     prompt_file = Path('cs336_alignment/prompts/r1_zero.prompt')
@@ -68,7 +71,17 @@ def evaluate_vllm(
         output_path.parent.mkdir(parents=True, exist_ok=True)
     else:
         output_path = Path(filename)
+    meta = {
+        "_meta": True,
+        "step": step_number,
+        "wall_clock_time": wall_clock_time,
+        "mean_entropy": mean_entropy,
+        "mean_response_length": mean_response_length,
+        "avg_accuracy": avg_accuracy,
+        "avg_format_reward": avg_format_reward,
+    }
     with output_path.open('w') as f:
+        f.write(json.dumps(meta) + '\n')
         for result in results:
             f.write(json.dumps(result) + '\n')
 
@@ -78,7 +91,9 @@ def evaluate_vllm(
 
     return {
         "accuracy": avg_accuracy,
-        "format_reward": avg_format_reward
+        "format_reward": avg_format_reward,
+        "mean_entropy": mean_entropy,
+        "mean_response_length": mean_response_length,
     }
 
 

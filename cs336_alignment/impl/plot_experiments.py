@@ -135,6 +135,9 @@ def parse_experiment_dir(exp_dir: Path) -> dict | None:
         total_format = 0.0
         total_reward = 0.0
         count = 0
+        wall_clock_time = None
+        mean_entropy = None
+        mean_response_length = None
 
         with open(f) as fh:
             for line in fh:
@@ -142,6 +145,12 @@ def parse_experiment_dir(exp_dir: Path) -> dict | None:
                 if not line:
                     continue
                 obj = json.loads(line)
+                # First line may be a metadata record
+                if obj.get("_meta"):
+                    wall_clock_time = obj.get("wall_clock_time")
+                    mean_entropy = obj.get("mean_entropy")
+                    mean_response_length = obj.get("mean_response_length")
+                    continue
                 scores = obj["scores"]
                 total_accuracy += 1.0 if scores["answer_reward"] > 0 else 0.0
                 total_format += scores["format_reward"]
@@ -153,6 +162,9 @@ def parse_experiment_dir(exp_dir: Path) -> dict | None:
                 "accuracy": total_accuracy / count,
                 "format_reward": total_format / count,
                 "reward": total_reward / count,
+                "wall_clock_time": wall_clock_time,
+                "entropy": mean_entropy,
+                "response_length": mean_response_length,
             }
 
     if not step_metrics:
@@ -165,6 +177,9 @@ def parse_experiment_dir(exp_dir: Path) -> dict | None:
         "accuracy": [step_metrics[s]["accuracy"] for s in sorted_steps],
         "format_reward": [step_metrics[s]["format_reward"] for s in sorted_steps],
         "reward": [step_metrics[s]["reward"] for s in sorted_steps],
+        "wall_clock_time": [step_metrics[s]["wall_clock_time"] for s in sorted_steps],
+        "entropy": [step_metrics[s]["entropy"] for s in sorted_steps],
+        "response_length": [step_metrics[s]["response_length"] for s in sorted_steps],
     }
 
 
@@ -201,39 +216,60 @@ def discover_experiments(paths: list[Path]) -> list[dict]:
 def plot_experiments(experiments: list[dict], output_path: Path, title: str = None):
     """
     Plot side-by-side metric curves for multiple experiments.
-    Creates subplots for: accuracy, format_reward, reward.
+    Row 1 (vs training step): accuracy, format_reward, reward, entropy, response_length
+    Row 2 (vs wall-clock time): same metrics, if wall-clock data is available
     """
-    metrics = ["accuracy", "format_reward", "reward"]
     metric_labels = {
         "accuracy": "Answer Accuracy",
         "format_reward": "Format Reward",
         "reward": "Overall Reward",
+        "entropy": "Mean Token Entropy",
+        "response_length": "Mean Response Length (tokens)",
     }
 
-    fig, axes = plt.subplots(1, len(metrics), figsize=(6 * len(metrics), 5))
-    if len(metrics) == 1:
-        axes = [axes]
+    # Check which extra metrics have data
+    active_metrics = ["accuracy", "format_reward", "reward"]
+    for m in ["entropy", "response_length"]:
+        if any(any(v is not None for v in exp.get(m, [])) for exp in experiments):
+            active_metrics.append(m)
 
-    for ax, metric in zip(axes, metrics):
-        for i, exp in enumerate(experiments):
-            color = COLORS[i % len(COLORS)]
-            marker = MARKERS[i % len(MARKERS)]
-            ax.plot(
-                exp["steps"],
-                exp[metric],
-                marker=marker,
-                color=color,
-                label=exp["name"],
-                markersize=5,
-                linewidth=2,
-                alpha=0.9,
-            )
-        ax.set_xlabel("Training Step")
-        ax.set_ylabel(metric_labels[metric])
-        ax.set_title(metric_labels[metric])
-        ax.legend(loc="best")
-        ax.grid(True, alpha=0.3)
-        ax.set_ylim(0, 1.05)
+    # Check if any experiment has wall-clock data
+    has_wallclock = any(
+        any(t is not None for t in exp.get("wall_clock_time", []))
+        for exp in experiments
+    )
+
+    n_metrics = len(active_metrics)
+    n_rows = 2 if has_wallclock else 1
+    fig, axes = plt.subplots(n_rows, n_metrics, figsize=(5 * n_metrics, 5 * n_rows), squeeze=False)
+
+    def _plot_row(axes_row, x_key, xlabel):
+        for ax, metric in zip(axes_row, active_metrics):
+            for i, exp in enumerate(experiments):
+                color = COLORS[i % len(COLORS)]
+                marker = MARKERS[i % len(MARKERS)]
+                if x_key == "steps":
+                    xs = exp["steps"]
+                else:
+                    xs = exp.get("wall_clock_time", [None] * len(exp["steps"]))
+                ys = exp.get(metric, [None] * len(exp["steps"]))
+                pairs = [(x, y) for x, y in zip(xs, ys) if x is not None and y is not None]
+                if not pairs:
+                    continue
+                px, py = zip(*pairs)
+                ax.plot(px, py, marker=marker, color=color, label=exp["name"],
+                        markersize=5, linewidth=2, alpha=0.9)
+            ax.set_xlabel(xlabel)
+            ax.set_ylabel(metric_labels[metric])
+            ax.set_title(metric_labels[metric])
+            ax.legend(loc="best")
+            ax.grid(True, alpha=0.3)
+            if metric in ("accuracy", "format_reward", "reward"):
+                ax.set_ylim(0, 1.05)
+
+    _plot_row(axes[0], "steps", "Training Step")
+    if has_wallclock:
+        _plot_row(axes[1], "wall_clock_time", "Wall-Clock Time (s)")
 
     suptitle = title or "GRPO Training: Experiment Comparison"
     fig.suptitle(suptitle, fontsize=16)

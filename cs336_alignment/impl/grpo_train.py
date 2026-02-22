@@ -176,6 +176,7 @@ def grpo_train( policy: PreTrainedModel,
             - 'diverged': bool indicating if training diverged
     """
     timer = Timer(enabled=debug)
+    training_start_time = time.perf_counter()
 
     eval_history = []
     diverged = False
@@ -240,6 +241,18 @@ def grpo_train( policy: PreTrainedModel,
         for request_output in vllm_outputs:  # One per input prompt
             for completion in request_output.outputs:  # group_size completions
                 rollout_responses.append(completion.text)
+
+        # Compute rollout-level entropy and response length for logging
+        rollout_token_counts = []
+        for request_output in vllm_outputs:
+            for completion in request_output.outputs:
+                rollout_token_counts.append(len(completion.token_ids))
+        rollout_mean_length = sum(rollout_token_counts) / len(rollout_token_counts) if rollout_token_counts else 0.0
+
+        # vLLM provides per-token logprobs if requested; use token_id count as proxy for length.
+        # Entropy is computed during the training forward pass below and accumulated.
+        rollout_entropy_sum = 0.0
+        rollout_entropy_count = 0
 
         timer.start("compute_rewards")
         advantage, raw_rewards, metadata = compute_group_normalized_rewards(r1_zero_reward_fn, rollout_responses, repeated_ground_truths, group_size, advantage_eps, use_std_normalization)
@@ -310,7 +323,16 @@ def grpo_train( policy: PreTrainedModel,
                 timer.stop("microbatch_pad")
 
                 timer.start("microbatch_forward")
-                new_log_prob = get_response_log_probs(policy, mb_input_ids, mb_labels, True)['log_probs']
+                fwd_out = get_response_log_probs(policy, mb_input_ids, mb_labels, True)
+                new_log_prob = fwd_out['log_probs']
+                # Accumulate mean response-token entropy for logging (first epoch only to avoid bias)
+                if _ == 0 and 'token_entropy' in fwd_out:
+                    ent = fwd_out['token_entropy']  # (mb, seq_len)
+                    mask = mb_response_mask.float()
+                    valid_tokens = mask.sum().item()
+                    if valid_tokens > 0:
+                        rollout_entropy_sum += (ent * mask).sum().item()
+                        rollout_entropy_count += int(valid_tokens)
                 timer.stop("microbatch_forward")
 
                 # Get old_log_probs slice for this microbatch (grpo_clip only)
@@ -372,7 +394,14 @@ def grpo_train( policy: PreTrainedModel,
                         logger.info(f"Running evaluation at step {global_step}...")
                         timer.start("evaluation")
                         load_policy_into_vllm_instance(policy, vllm_instance)
-                        eval_metrics = evaluate_vllm(vllm_instance, r1_zero_reward_fn, valid_prompts, valid_ground_truths, EVAL_SAMPLING_PARAM, step_number=global_step, output_dir=output_dir, lr_tag=lr_tag)
+                        step_mean_entropy = rollout_entropy_sum / rollout_entropy_count if rollout_entropy_count > 0 else None
+                        eval_metrics = evaluate_vllm(
+                            vllm_instance, r1_zero_reward_fn, valid_prompts, valid_ground_truths,
+                            EVAL_SAMPLING_PARAM, step_number=global_step, output_dir=output_dir, lr_tag=lr_tag,
+                            wall_clock_time=time.perf_counter() - training_start_time,
+                            mean_entropy=step_mean_entropy,
+                            mean_response_length=rollout_mean_length,
+                        )
                         timer.stop("evaluation")
                         logger.info(f"Evaluation results - accuracy: {eval_metrics['accuracy']:.4f}, format_reward: {eval_metrics['format_reward']:.4f}")
                         eval_history.append((global_step, eval_metrics['accuracy'], eval_metrics['format_reward']))
@@ -383,7 +412,14 @@ def grpo_train( policy: PreTrainedModel,
     logger.info("Running final evaluation...")
     timer.start("final_evaluation")
     load_policy_into_vllm_instance(policy, vllm_instance)
-    final_metrics = evaluate_vllm(vllm_instance, r1_zero_reward_fn, valid_prompts, valid_ground_truths, EVAL_SAMPLING_PARAM, step_number=global_step, output_dir=output_dir, lr_tag=lr_tag)
+    final_step_mean_entropy = rollout_entropy_sum / rollout_entropy_count if rollout_entropy_count > 0 else None
+    final_metrics = evaluate_vllm(
+        vllm_instance, r1_zero_reward_fn, valid_prompts, valid_ground_truths,
+        EVAL_SAMPLING_PARAM, step_number=global_step, output_dir=output_dir, lr_tag=lr_tag,
+        wall_clock_time=time.perf_counter() - training_start_time,
+        mean_entropy=final_step_mean_entropy,
+        mean_response_length=rollout_mean_length,
+    )
     timer.stop("final_evaluation")
     eval_history.append((global_step, final_metrics['accuracy'], final_metrics['format_reward']))
     logger.info(f"Final evaluation - accuracy: {final_metrics['accuracy']:.4f}, format_reward: {final_metrics['format_reward']:.4f}")
@@ -611,7 +647,12 @@ if __name__ == "__main__":
     parser.add_argument("--loss_type", type=str, default="reinforce_with_baseline",
                        choices=["no_baseline", "reinforce_with_baseline", "grpo_clip"])
     parser.add_argument("--output_dir", type=str, default=None, help="Output directory for results")
-    parser.add_argument("--grad_accum_steps", type=int, default=128, help="Gradient accumulation steps (microbatch = train_batch/this)")
+    parser.add_argument("--grad_accum_steps", type=int, default=None,
+                       help="Gradient accumulation steps. If not set, auto-computed to keep microbatch size = train_batch_size/128")
+    parser.add_argument("--train_batch_size", type=int, default=256,
+                       help="Number of rollout samples to train on per step (default: 256 = rollout_batch_size)")
+    parser.add_argument("--epochs_per_rollout_batch", type=int, default=1,
+                       help="How many gradient passes over each rollout batch (>1 = off-policy reuse)")
     parser.add_argument("--debug", action="store_true", help="Enable timing instrumentation for performance debugging")
     parser.add_argument("--normalize_constant", type=float, default=None,
                        help="If set, use masked_normalize with this constant instead of masked_mean for per-token loss aggregation")
@@ -620,6 +661,11 @@ if __name__ == "__main__":
     parser.add_argument("--lrs", type=float, nargs="+", default=None, help="Learning rates for sweep (overrides built-in list)")
 
     args = parser.parse_args()
+
+    # Auto-compute grad_accum_steps to keep microbatch size constant at train_batch_size/128
+    BASE_MICROBATCH = 2  # fits on H100 with 1.5B model
+    if args.grad_accum_steps is None:
+        args.grad_accum_steps = max(1, args.train_batch_size // BASE_MICROBATCH)
 
     if args.sweep:
         # Learning rate sweep - skip 1e-6 (already done)
@@ -661,6 +707,8 @@ if __name__ == "__main__":
             suffix += f"_norm{int(args.normalize_constant)}"
         if args.no_std_normalization:
             suffix += "_no_std"
+        if args.train_batch_size != 256 or args.epochs_per_rollout_batch != 1:
+            suffix += f"_tbs{args.train_batch_size}_e{args.epochs_per_rollout_batch}"
         single_output_dir = f"{base_output_dir}/{suffix}"
         lr_tag = f"{args.lr:.0e}".replace("+", "").replace("-0", "-")
 
@@ -684,6 +732,8 @@ if __name__ == "__main__":
             gradient_accumulation_steps=args.grad_accum_steps,
             normalize_constant=args.normalize_constant,
             use_std_normalization=not args.no_std_normalization,
+            train_batch_size=args.train_batch_size,
+            epochs_per_rollout_batch=args.epochs_per_rollout_batch,
             debug=args.debug
         )
 
