@@ -605,18 +605,20 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint", type=str, default=DEFAULT_CHECKPOINT, help="Path to model checkpoint")
     parser.add_argument("--sweep", action="store_true", help="Run learning rate sweep")
     parser.add_argument("--n_steps", type=int, default=200, help="Number of GRPO steps")
-    parser.add_argument("--lr", type=float, default=1e-5, help="Learning rate (for single run)")
+    parser.add_argument("--lr", type=float, default=1e-5, help="Learning rate (for single run, sweet spot from sweep)")
     parser.add_argument("--loss_type", type=str, default="reinforce_with_baseline",
                        choices=["no_baseline", "reinforce_with_baseline", "grpo_clip"])
-    parser.add_argument("--output_dir", type=str, default="lr_sweep_results", help="Output directory for sweep")
+    parser.add_argument("--output_dir", type=str, default=None, help="Output directory for results")
     parser.add_argument("--grad_accum_steps", type=int, default=128, help="Gradient accumulation steps (microbatch = train_batch/this)")
     parser.add_argument("--debug", action="store_true", help="Enable timing instrumentation for performance debugging")
+    parser.add_argument("--lrs", type=float, nargs="+", default=None, help="Learning rates for sweep (overrides built-in list)")
 
     args = parser.parse_args()
 
     if args.sweep:
         # Learning rate sweep - skip 1e-6 (already done)
-        learning_rates = [5e-6, 1e-5, 5e-5, 1e-4]
+        sweep_output_dir = args.output_dir if args.output_dir else "lr_sweep_results"
+        learning_rates = args.lrs if args.lrs else [5e-6, 1e-5, 5e-5, 1e-4]
         logger.info(f"Running learning rate sweep with rates: {learning_rates}")
 
         results = run_learning_rate_sweep(
@@ -624,7 +626,7 @@ if __name__ == "__main__":
             learning_rates=learning_rates,
             n_grpo_steps=args.n_steps,
             loss_type=args.loss_type,
-            output_dir=args.output_dir,
+            output_dir=sweep_output_dir,
             debug=args.debug,
             gradient_accumulation_steps=args.grad_accum_steps
         )
@@ -640,12 +642,17 @@ if __name__ == "__main__":
             else:
                 print(f"lr={lr:.1e}: final_accuracy={result['final_accuracy']:.4f}")
         print("="*60)
-        print(f"\nResults saved to {args.output_dir}/")
+        print(f"\nResults saved to {sweep_output_dir}/")
         print(f"- sweep_results.json: Raw results")
         print(f"- validation_curves.png: Validation accuracy plot")
 
     else:
         # Single training run
+        # Default output under grpo_comparison/<loss_type>
+        base_output_dir = args.output_dir if args.output_dir else "grpo_comparison"
+        single_output_dir = f"{base_output_dir}/{args.loss_type}"
+        lr_tag = f"{args.lr:.0e}".replace("+", "").replace("-0", "-")
+
         policy = AutoModelForCausalLM.from_pretrained(args.checkpoint).to(TRAIN_DEVICE)
         optimizer = torch.optim.AdamW(
             policy.parameters(),
@@ -661,11 +668,29 @@ if __name__ == "__main__":
             vllm_instance=vllm_instance,
             n_grpo_steps=args.n_steps,
             loss_type=args.loss_type,
+            output_dir=single_output_dir,
+            lr_tag=lr_tag,
             gradient_accumulation_steps=args.grad_accum_steps,
             debug=args.debug
         )
+
+        # Save eval history
+        results_path = Path(single_output_dir)
+        results_path.mkdir(parents=True, exist_ok=True)
+        results_file = results_path / "results.json"
+        with open(results_file, 'w') as f:
+            json.dump({
+                'loss_type': args.loss_type,
+                'learning_rate': args.lr,
+                'n_steps': args.n_steps,
+                'eval_history': results['eval_history'],
+                'final_accuracy': results['final_accuracy'],
+                'diverged': results['diverged']
+            }, f, indent=2)
+        logger.info(f"Saved results to {results_file}")
 
         if results['diverged']:
             print(f"\nTraining DIVERGED")
         else:
             print(f"\nTraining completed. Final accuracy: {results['final_accuracy']:.4f}")
+        print(f"Results saved to {single_output_dir}/")
