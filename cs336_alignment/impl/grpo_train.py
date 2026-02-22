@@ -308,6 +308,14 @@ def grpo_train( policy: PreTrainedModel,
         policy.train()
         for _ in range(epochs_per_rollout_batch):
             accumulated_loss = 0.0
+            # Shuffle rollout data each epoch so train_batch_size < rollout_batch_size
+            # draws a different subset each pass rather than always reusing indices 0..train_batch_size
+            perm = torch.randperm(len(combined_seqs))
+            epoch_seqs = [combined_seqs[j] for j in perm]
+            epoch_prompt_lengths = [prompt_lengths[j] for j in perm]
+            epoch_advantage = advantage[perm]
+            epoch_raw_rewards = raw_rewards[perm]
+
             # Track which old_log_probs chunk corresponds to each microbatch
             old_chunk_idx = 0
             old_chunk_offset = 0
@@ -317,8 +325,8 @@ def grpo_train( policy: PreTrainedModel,
                 # Pad this microbatch independently (only to its own max length)
                 timer.start("microbatch_pad")
                 mb_input_ids, mb_labels, mb_response_mask = _pad_microbatch(
-                    combined_seqs[train_step:train_step+micro_train_batch_size],
-                    prompt_lengths[train_step:train_step+micro_train_batch_size],
+                    epoch_seqs[train_step:train_step+micro_train_batch_size],
+                    epoch_prompt_lengths[train_step:train_step+micro_train_batch_size],
                     pad_token_id, TRAIN_DEVICE)
                 timer.stop("microbatch_pad")
 
@@ -362,8 +370,8 @@ def grpo_train( policy: PreTrainedModel,
 
                 timer.start("microbatch_loss_backward")
                 loss, loss_metadata = grpo_microbatch_train_step(new_log_prob, mb_response_mask,
-                                           gradient_accumulation_steps, loss_type, raw_rewards[train_step:train_step+micro_train_batch_size],
-                                           advantage[train_step:train_step+micro_train_batch_size],
+                                           gradient_accumulation_steps, loss_type, epoch_raw_rewards[train_step:train_step+micro_train_batch_size],
+                                           epoch_advantage[train_step:train_step+micro_train_batch_size],
                                            mb_old_log_probs, clip_range, normalize_constant)
                 timer.stop("microbatch_loss_backward")
 
