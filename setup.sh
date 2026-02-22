@@ -3,8 +3,8 @@
 
 set -e  # Exit on error
 
-echo "Installing rsync..."
-apt update && apt install -y rsync
+echo "Installing system packages..."
+apt update && apt install -y rsync vim
 
 echo "Installing uv..."
 curl -LsSf https://astral.sh/uv/install.sh | sh
