@@ -1,20 +1,20 @@
 #!/bin/bash
 # Broad sweep: epochs_per_rollout_batch x train_batch_size, 40 GRPO steps.
 # Fixes rollout_batch_size=256, lr=1e-5, loss=reinforce_with_baseline.
-# grad_accum_steps is auto-computed to keep microbatch=2 constant.
+# grad_accum_steps is auto-computed to keep microbatch=4 constant.
 #
 # Experiment log / rationale:
-#   train_batch_size: {128, 256, 512}
-#     - 128 = half the rollout; each step trains on only half the data (more noise, faster per step)
-#     - 256 = on-policy default (all rollout data, one pass)
-#     - 512 = requires 2 rollout batches worth (cycles data, more off-policy at higher epoch)
+#   train_batch_size: {64, 128, 256}  -- must be <= rollout_batch_size=256
+#     - 64  = quarter of rollout; high noise, fast gradient steps
+#     - 128 = half the rollout; moderate noise
+#     - 256 = on-policy default (all rollout data)
 #   epochs_per_rollout_batch: {1, 2, 4}
 #     - 1 = fully on-policy (baseline)
 #     - 2 = moderate reuse, common in PPO
 #     - 4 = aggressive reuse; tests staleness tolerance
 #
-# Memory: microbatch = train_batch_size // grad_accum_steps = 2 (fixed by auto-compute).
-# Wall-clock: fewer rollouts per gradient step -> faster for high-epoch configs.
+# Memory: microbatch = train_batch_size // grad_accum_steps = 4 (fixed by auto-compute).
+# Wall-clock: higher epochs reuse rollouts -> more gradient steps per rollout generation.
 
 BASE=/workspace/assignment5-alignment
 CHECKPOINT=$BASE/checkpoints/epoch_2
@@ -34,13 +34,13 @@ run() {
     --output_dir $OUTPUT
 }
 
-# 3x3 grid: tbs in {128, 256, 512} x epochs in {1, 2, 4}
+# 3x3 grid: tbs in {64, 128, 256} x epochs in {1, 2, 4}
+run 64  1
+run 64  2
+run 64  4
 run 128 1
 run 128 2
 run 128 4
 run 256 1
 run 256 2
 run 256 4
-run 512 1
-run 512 2
-run 512 4

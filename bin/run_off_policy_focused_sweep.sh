@@ -23,9 +23,9 @@ run() {
 }
 
 # On-policy baseline (epochs=1, tbs=256)
-run 256 1
+# run 256 1
 
-# Best candidates from broad sweep (edit as needed):
-run 256 2
-run 256 4
-run 128 2
+# Best candidates from broad sweep (tbs must be <= rollout_batch_size=256; edit as needed):
+# run 256 2
+# run 256 4
+# run 128 2

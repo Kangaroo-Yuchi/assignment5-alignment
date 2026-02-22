@@ -663,7 +663,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Auto-compute grad_accum_steps to keep microbatch size constant at train_batch_size/128
-    BASE_MICROBATCH = 2  # fits on H100 with 1.5B model
+    BASE_MICROBATCH = 4  # fits on H100 with 1.5B model
     if args.grad_accum_steps is None:
         args.grad_accum_steps = max(1, args.train_batch_size // BASE_MICROBATCH)
 
