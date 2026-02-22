@@ -161,6 +161,7 @@ def grpo_train( policy: PreTrainedModel,
                 "grpo_clip",
                 ] = "reinforce_with_baseline",
                 use_std_normalization: bool = True,
+                normalize_constant: float | None = None,
                 output_dir: str = None,
                 lr_tag: str = None,
                 debug: bool = False,
@@ -214,6 +215,7 @@ def grpo_train( policy: PreTrainedModel,
     logger.info(f"Starting GRPO training with {n_grpo_steps} steps")
     logger.info(f"Loss type: {loss_type}, rollout_batch_size: {rollout_batch_size}, group_size: {group_size}")
     logger.info(f"train_batch_size: {train_batch_size}, micro_batch_size: {micro_train_batch_size}, grad_accum_steps: {gradient_accumulation_steps}")
+    logger.info(f"Token aggregation: {'masked_normalize(constant=' + str(normalize_constant) + ')' if normalize_constant is not None else 'masked_mean'}")
     if debug:
         logger.info("DEBUG TIMING ENABLED - will log per-phase timings each rollout step")
 
@@ -340,7 +342,7 @@ def grpo_train( policy: PreTrainedModel,
                 loss, loss_metadata = grpo_microbatch_train_step(new_log_prob, mb_response_mask,
                                            gradient_accumulation_steps, loss_type, raw_rewards[train_step:train_step+micro_train_batch_size],
                                            advantage[train_step:train_step+micro_train_batch_size],
-                                           mb_old_log_probs, clip_range)
+                                           mb_old_log_probs, clip_range, normalize_constant)
                 timer.stop("microbatch_loss_backward")
 
                 accumulated_loss += loss.item()
@@ -611,6 +613,8 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", type=str, default=None, help="Output directory for results")
     parser.add_argument("--grad_accum_steps", type=int, default=128, help="Gradient accumulation steps (microbatch = train_batch/this)")
     parser.add_argument("--debug", action="store_true", help="Enable timing instrumentation for performance debugging")
+    parser.add_argument("--normalize_constant", type=float, default=None,
+                       help="If set, use masked_normalize with this constant instead of masked_mean for per-token loss aggregation")
     parser.add_argument("--lrs", type=float, nargs="+", default=None, help="Learning rates for sweep (overrides built-in list)")
 
     args = parser.parse_args()
@@ -650,7 +654,10 @@ if __name__ == "__main__":
         # Single training run
         # Default output under grpo_comparison/<loss_type>
         base_output_dir = args.output_dir if args.output_dir else "grpo_comparison"
-        single_output_dir = f"{base_output_dir}/{args.loss_type}"
+        suffix = args.loss_type
+        if args.normalize_constant is not None:
+            suffix += f"_norm{int(args.normalize_constant)}"
+        single_output_dir = f"{base_output_dir}/{suffix}"
         lr_tag = f"{args.lr:.0e}".replace("+", "").replace("-0", "-")
 
         policy = AutoModelForCausalLM.from_pretrained(args.checkpoint).to(TRAIN_DEVICE)
@@ -671,6 +678,7 @@ if __name__ == "__main__":
             output_dir=single_output_dir,
             lr_tag=lr_tag,
             gradient_accumulation_steps=args.grad_accum_steps,
+            normalize_constant=args.normalize_constant,
             debug=args.debug
         )
 

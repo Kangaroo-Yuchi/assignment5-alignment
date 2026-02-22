@@ -235,11 +235,15 @@ def grpo_microbatch_train_step(
     advantages: torch.Tensor | None= None,
     old_log_probs: torch.Tensor | None= None,
     cliprange: float | None= None,
+    normalize_constant: float | None= None,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
 
     loss, metadata = compute_policy_gradient_loss(policy_log_probs, loss_type, raw_rewards, advantages, old_log_probs, cliprange)
     loss /= gradient_accumulation_steps
-    loss = masked_mean(loss, response_mask, dim=-1)
+    if normalize_constant is not None:
+        loss = masked_normalize(loss, response_mask, normalize_constant, dim=-1)
+    else:
+        loss = masked_mean(loss, response_mask, dim=-1)
     loss = torch.mean(loss, dim = 0)
     loss.backward()
     return loss, metadata
