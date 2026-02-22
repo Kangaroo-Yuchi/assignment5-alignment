@@ -615,6 +615,8 @@ if __name__ == "__main__":
     parser.add_argument("--debug", action="store_true", help="Enable timing instrumentation for performance debugging")
     parser.add_argument("--normalize_constant", type=float, default=None,
                        help="If set, use masked_normalize with this constant instead of masked_mean for per-token loss aggregation")
+    parser.add_argument("--no_std_normalization", action="store_true",
+                       help="Disable std normalization in group reward normalization (use_std_normalization=False)")
     parser.add_argument("--lrs", type=float, nargs="+", default=None, help="Learning rates for sweep (overrides built-in list)")
 
     args = parser.parse_args()
@@ -657,6 +659,8 @@ if __name__ == "__main__":
         suffix = args.loss_type
         if args.normalize_constant is not None:
             suffix += f"_norm{int(args.normalize_constant)}"
+        if args.no_std_normalization:
+            suffix += "_no_std"
         single_output_dir = f"{base_output_dir}/{suffix}"
         lr_tag = f"{args.lr:.0e}".replace("+", "").replace("-0", "-")
 
@@ -679,6 +683,7 @@ if __name__ == "__main__":
             lr_tag=lr_tag,
             gradient_accumulation_steps=args.grad_accum_steps,
             normalize_constant=args.normalize_constant,
+            use_std_normalization=not args.no_std_normalization,
             debug=args.debug
         )
 
