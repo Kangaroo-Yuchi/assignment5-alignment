@@ -367,6 +367,8 @@ def grpo_train( policy: PreTrainedModel,
                 timer.stop("microbatch_loss_backward")
 
                 accumulated_loss += loss.item()
+                if "mean_ratio" in loss_metadata:
+                    logger.info(f"  microbatch mean_ratio={loss_metadata['mean_ratio']:.4f}")
 
                 # Check for divergence (NaN or very large loss)
                 if torch.isnan(loss) or torch.isinf(loss) or abs(loss.item()) > 1e6:
@@ -389,7 +391,7 @@ def grpo_train( policy: PreTrainedModel,
                     accumulated_loss = 0.0
 
         grpo_step = i + 1
-        logger.info(f"GRPO step {grpo_step}: mean_reward={metadata['mean_reward']:.4f}")
+        logger.info(f"GRPO step {grpo_step}: mean_reward={metadata['mean_reward']:.4f}, std_reward={metadata['std_reward']:.4f}")
         timer.log_step_summary(i)
 
         if grpo_step % EVALUATION_STEP == 0:
