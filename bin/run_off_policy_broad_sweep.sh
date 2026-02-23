@@ -34,9 +34,9 @@ run() {
 }
 
 # 2x3 grid: tbs in {128, 256} x epochs in {1, 2, 4}
-run 128 1
+#run 128 1
+run 256 2
 run 128 2
 run 128 4
-run 256 1
-run 256 2
+#run 256 1
 run 256 4
