@@ -703,6 +703,7 @@ if __name__ == "__main__":
         # Single training run
         # Default output under grpo_comparison/<loss_type>
         base_output_dir = args.output_dir if args.output_dir else "grpo_comparison"
+        lr_tag = f"{args.lr:.0e}".replace("+", "").replace("-0", "-")
         suffix = args.loss_type
         if args.normalize_constant is not None:
             suffix += f"_norm{int(args.normalize_constant)}"
