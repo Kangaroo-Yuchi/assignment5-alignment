@@ -307,28 +307,29 @@ def grpo_train( policy: PreTrainedModel,
 
         policy.train()
         for _ in range(epochs_per_rollout_batch):
-            accumulated_loss = 0.0
-            # Shuffle rollout data each epoch so train_batch_size < rollout_batch_size
-            # draws a different subset each pass rather than always reusing indices 0..train_batch_size
+            # Shuffle rollout data each epoch for unbiased coverage
             perm = torch.randperm(len(combined_seqs))
             epoch_seqs = [combined_seqs[j] for j in perm]
             epoch_prompt_lengths = [prompt_lengths[j] for j in perm]
             epoch_advantage = advantage[perm]
             epoch_raw_rewards = raw_rewards[perm]
 
-            # Track which old_log_probs chunk corresponds to each microbatch
-            old_chunk_idx = 0
-            old_chunk_offset = 0
-            old_chunk_mb_size = micro_train_batch_size * 4  # matches chunk_size above
+            # Iterate over the full rollout in train_batch_size chunks,
+            # one optimizer step per chunk (gradient_accumulation_steps microbatches each)
+            for train_batch_start in range(0, rollout_batch_size, train_batch_size):
+                accumulated_loss = 0.0
+                old_chunk_idx = 0
+                old_chunk_offset = 0
+                old_chunk_mb_size = micro_train_batch_size * 4  # matches chunk_size above
 
-            for idx, train_step in enumerate(range(0, train_batch_size, micro_train_batch_size)):
-                # Pad this microbatch independently (only to its own max length)
-                timer.start("microbatch_pad")
-                mb_input_ids, mb_labels, mb_response_mask = _pad_microbatch(
-                    epoch_seqs[train_step:train_step+micro_train_batch_size],
-                    epoch_prompt_lengths[train_step:train_step+micro_train_batch_size],
-                    pad_token_id, TRAIN_DEVICE)
-                timer.stop("microbatch_pad")
+                for idx, micro_start in enumerate(range(train_batch_start, train_batch_start + train_batch_size, micro_train_batch_size)):
+                    # Pad this microbatch independently (only to its own max length)
+                    timer.start("microbatch_pad")
+                    mb_input_ids, mb_labels, mb_response_mask = _pad_microbatch(
+                        epoch_seqs[micro_start:micro_start+micro_train_batch_size],
+                        epoch_prompt_lengths[micro_start:micro_start+micro_train_batch_size],
+                        pad_token_id, TRAIN_DEVICE)
+                    timer.stop("microbatch_pad")
 
                 timer.start("microbatch_forward")
                 fwd_out = get_response_log_probs(policy, mb_input_ids, mb_labels, True)
@@ -370,8 +371,8 @@ def grpo_train( policy: PreTrainedModel,
 
                 timer.start("microbatch_loss_backward")
                 loss, loss_metadata = grpo_microbatch_train_step(new_log_prob, mb_response_mask,
-                                           gradient_accumulation_steps, loss_type, epoch_raw_rewards[train_step:train_step+micro_train_batch_size],
-                                           epoch_advantage[train_step:train_step+micro_train_batch_size],
+                                           gradient_accumulation_steps, loss_type, epoch_raw_rewards[micro_start:micro_start+micro_train_batch_size],
+                                           epoch_advantage[micro_start:micro_start+micro_train_batch_size],
                                            mb_old_log_probs, clip_range, normalize_constant)
                 timer.stop("microbatch_loss_backward")
 
