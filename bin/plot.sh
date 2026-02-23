@@ -1,2 +1,2 @@
 #!/bin/zsh
-python3 cs336_alignment/impl/plot_experiments.py --remote 149.7.4.149:17220 /workspace/assignment5-alignment/grpo_comparison -o grpo_comparison/grpo_loss_type_comparison.jpg -t "GRPO Loss Type Comparison (Qwen2.5-Math-1.5B on GSM8K)"
+python3 cs336_alignment/impl/plot_experiments.py --remote 149.7.4.149:17220 /workspace/assignment5-alignment/grpo_comparison/off_policy_sweep -o grpo_comparison/grpo_loss_type_comparison_off_off_policy_sweep.jpg -t "GRPO Loss Type Comparison (Qwen2.5-Math-1.5B on GSM8K)"
