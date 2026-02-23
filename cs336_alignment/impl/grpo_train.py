@@ -193,6 +193,10 @@ def grpo_train( policy: PreTrainedModel,
 
     micro_train_batch_size = train_batch_size // gradient_accumulation_steps
     n_prompts_per_rollout_batch = rollout_batch_size // group_size
+    # Scale gradient_accumulation_steps by the number of optimizer steps per rollout
+    # so the total gradient signal per rollout is constant regardless of tbs and epochs.
+    # optimizer_steps_per_rollout = (rollout_batch_size // train_batch_size) * epochs_per_rollout_batch
+    effective_gradient_accumulation_steps = gradient_accumulation_steps * (rollout_batch_size // train_batch_size) * epochs_per_rollout_batch
     # Format training data with r1_zero template
     raw_questions = [example['question'] for example in ds['train']]
     raw_answers = [example['answer'] for example in ds['train']]
@@ -357,7 +361,7 @@ def grpo_train( policy: PreTrainedModel,
 
                 timer.start("microbatch_loss_backward")
                 loss, loss_metadata = grpo_microbatch_train_step(new_log_prob, mb_response_mask,
-                                           gradient_accumulation_steps, loss_type, epoch_raw_rewards[micro_start:micro_start+micro_train_batch_size],
+                                           effective_gradient_accumulation_steps, loss_type, epoch_raw_rewards[micro_start:micro_start+micro_train_batch_size],
                                            epoch_advantage[micro_start:micro_start+micro_train_batch_size],
                                            mb_old_log_probs, clip_range, normalize_constant)
                 timer.stop("microbatch_loss_backward")
