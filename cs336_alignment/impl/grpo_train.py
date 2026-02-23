@@ -706,6 +706,7 @@ if __name__ == "__main__":
             suffix += "_no_std"
         if args.train_batch_size != 256 or args.epochs_per_rollout_batch != 1:
             suffix += f"_tbs{args.train_batch_size}_e{args.epochs_per_rollout_batch}"
+        suffix += f"_lr{lr_tag}"
         single_output_dir = f"{base_output_dir}/{suffix}"
         lr_tag = f"{args.lr:.0e}".replace("+", "").replace("-0", "-")
 
