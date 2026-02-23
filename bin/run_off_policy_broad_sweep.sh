@@ -4,10 +4,10 @@
 # grad_accum_steps is auto-computed to keep microbatch=4 constant.
 #
 # Experiment log / rationale:
-#   train_batch_size: {64, 128, 256}  -- must be <= rollout_batch_size=256
-#     - 64  = 4 optimizer steps per epoch, high gradient frequency
+#   train_batch_size: {128, 256}  -- must be <= rollout_batch_size=256
 #     - 128 = 2 optimizer steps per epoch, moderate
 #     - 256 = 1 optimizer step per epoch (same as original on-policy when epochs=1)
+#   (tbs=64 excluded: 4 gradient steps per epoch causes reward collapse with stale old_log_probs)
 #   epochs_per_rollout_batch: {1, 2, 4}
 #     - 1 = one full pass over rollout data
 #     - 2 = two full passes (moderate off-policy reuse)
@@ -33,10 +33,7 @@ run() {
     --output_dir $OUTPUT
 }
 
-# 3x3 grid: tbs in {64, 128, 256} x epochs in {1, 2, 4}
-run 64  1
-run 64  2
-run 64  4
+# 2x3 grid: tbs in {128, 256} x epochs in {1, 2, 4}
 run 128 1
 run 128 2
 run 128 4
