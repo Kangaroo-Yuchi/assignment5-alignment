@@ -422,7 +422,7 @@ def grpo_train( policy: PreTrainedModel,
 
     return {
         'eval_history': eval_history,
-        'final_accuracy': final_metrics['accuracy'],
+        'final_accuracy': eval_history[-1][1] if eval_history else 0.0,
         'diverged': False
     }
 
