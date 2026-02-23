@@ -283,27 +283,29 @@ def grpo_train( policy: PreTrainedModel,
             logger.info(f"  seq lengths: min={min(seq_lengths)}, max={max(seq_lengths)}, avg={sum(seq_lengths)/len(seq_lengths):.1f}")
             logger.info(f"  avg response tokens per sample: {avg_resp_tokens:.1f}")
 
-        if loss_type == "grpo_clip":
-            timer.start("old_log_probs")
-            policy.eval()
-            with torch.no_grad():
-                old_log_probs_list = []
-                chunk_size = micro_train_batch_size * 4
-                for chunk_start in range(0, rollout_batch_size, chunk_size):
-                    chunk_end = min(chunk_start + chunk_size, rollout_batch_size)
-                    chunk_input_ids, chunk_labels, _ = _pad_microbatch(
-                        combined_seqs[chunk_start:chunk_end],
-                        prompt_lengths[chunk_start:chunk_end],
-                        pad_token_id, TRAIN_DEVICE)
-                    chunk_log_probs = get_response_log_probs(
-                        policy, chunk_input_ids, chunk_labels, True
-                    )['log_probs']
-                    old_log_probs_list.append(chunk_log_probs)
-                # Note: old_log_probs chunks have different seq_len dims, store as list
-                old_log_probs_chunks = old_log_probs_list
-            timer.stop("old_log_probs")
-        else:
-            old_log_probs_chunks = None
+        # Compute old_log_probs for off-policy GRPO-Clip loss.
+        # Always computed; used only when loss_type == "grpo_clip".
+        # Stored as a list of per-sample tensors (variable length) so they can be
+        # permuted consistently with epoch shuffling.
+        timer.start("old_log_probs")
+        policy.eval()
+        old_log_probs_per_sample = []
+        chunk_size = micro_train_batch_size * 4
+        with torch.inference_mode():
+            for chunk_start in range(0, rollout_batch_size, chunk_size):
+                chunk_end = min(chunk_start + chunk_size, rollout_batch_size)
+                chunk_input_ids, chunk_labels, _ = _pad_microbatch(
+                    combined_seqs[chunk_start:chunk_end],
+                    prompt_lengths[chunk_start:chunk_end],
+                    pad_token_id, TRAIN_DEVICE)
+                chunk_log_probs = get_response_log_probs(
+                    policy, chunk_input_ids, chunk_labels, False
+                )['log_probs']  # (chunk, seq_len)
+                # Store each sample's log_probs trimmed to its actual sequence length
+                for k in range(chunk_end - chunk_start):
+                    actual_len = seq_lengths[chunk_start + k]
+                    old_log_probs_per_sample.append(chunk_log_probs[k, :actual_len - 1].cpu())
+        timer.stop("old_log_probs")
 
         policy.train()
         for _ in range(epochs_per_rollout_batch):
@@ -313,14 +315,12 @@ def grpo_train( policy: PreTrainedModel,
             epoch_prompt_lengths = [prompt_lengths[j] for j in perm]
             epoch_advantage = advantage[perm]
             epoch_raw_rewards = raw_rewards[perm]
+            epoch_old_log_probs = [old_log_probs_per_sample[j] for j in perm]
 
             # Iterate over the full rollout in train_batch_size chunks,
             # one optimizer step per chunk (gradient_accumulation_steps microbatches each)
             for train_batch_start in range(0, rollout_batch_size, train_batch_size):
                 accumulated_loss = 0.0
-                old_chunk_idx = 0
-                old_chunk_offset = 0
-                old_chunk_mb_size = micro_train_batch_size * 4  # matches chunk_size above
 
                 for idx, micro_start in enumerate(range(train_batch_start, train_batch_start + train_batch_size, micro_train_batch_size)):
                     # Pad this microbatch independently (only to its own max length)
@@ -331,43 +331,26 @@ def grpo_train( policy: PreTrainedModel,
                         pad_token_id, TRAIN_DEVICE)
                     timer.stop("microbatch_pad")
 
-                timer.start("microbatch_forward")
-                fwd_out = get_response_log_probs(policy, mb_input_ids, mb_labels, True)
-                new_log_prob = fwd_out['log_probs']
-                # Accumulate mean response-token entropy for logging (first epoch only to avoid bias)
-                if _ == 0 and 'token_entropy' in fwd_out:
-                    ent = fwd_out['token_entropy']  # (mb, seq_len)
-                    mask = mb_response_mask.float()
-                    valid_tokens = mask.sum().item()
-                    if valid_tokens > 0:
-                        rollout_entropy_sum += (ent * mask).sum().item()
-                        rollout_entropy_count += int(valid_tokens)
-                timer.stop("microbatch_forward")
+                    timer.start("microbatch_forward")
+                    fwd_out = get_response_log_probs(policy, mb_input_ids, mb_labels, True)
+                    new_log_prob = fwd_out['log_probs']
+                    # Accumulate mean response-token entropy for logging (first epoch only to avoid bias)
+                    if _ == 0 and 'token_entropy' in fwd_out:
+                        ent = fwd_out['token_entropy']  # (mb, seq_len)
+                        mask = mb_response_mask.float()
+                        valid_tokens = mask.sum().item()
+                        if valid_tokens > 0:
+                            rollout_entropy_sum += (ent * mask).sum().item()
+                            rollout_entropy_count += int(valid_tokens)
+                    timer.stop("microbatch_forward")
 
-                # Get old_log_probs slice for this microbatch (grpo_clip only)
-                mb_old_log_probs = None
-                if old_log_probs_chunks is not None:
-                    # old_log_probs were computed with chunk_size = micro_train_batch_size * 4
-                    # So chunk i covers microbatches [4*i, 4*i+4).
-                    # But seq lengths differ per chunk, so we need to re-pad.
-                    # Simpler: recompute per-microbatch (already padded to mb length).
-                    # For correctness with different padding, we need to slice from the
-                    # chunk that was padded to a potentially different length.
-                    # The safe approach: slice rows and truncate/pad the seq dim.
-                    chunk = old_log_probs_chunks[old_chunk_idx]
-                    mb_old = chunk[old_chunk_offset:old_chunk_offset+micro_train_batch_size]
-                    # Align seq lengths: mb has seq_len = mb_input_ids.shape[1], chunk may differ
+                    # Align old_log_probs to this microbatch's padded seq_len
                     mb_seq_len = mb_input_ids.shape[1]
-                    old_seq_len = mb_old.shape[1]
-                    if old_seq_len >= mb_seq_len:
-                        mb_old_log_probs = mb_old[:, :mb_seq_len]
-                    else:
-                        mb_old_log_probs = torch.nn.functional.pad(mb_old, (0, mb_seq_len - old_seq_len), value=0.0)
-
-                    old_chunk_offset += micro_train_batch_size
-                    if old_chunk_offset >= chunk.shape[0]:
-                        old_chunk_idx += 1
-                        old_chunk_offset = 0
+                    mb_old_list = epoch_old_log_probs[micro_start:micro_start+micro_train_batch_size]
+                    mb_old_log_probs = torch.zeros(len(mb_old_list), mb_seq_len, device=TRAIN_DEVICE)
+                    for k, old_lp in enumerate(mb_old_list):
+                        copy_len = min(len(old_lp), mb_seq_len)
+                        mb_old_log_probs[k, :copy_len] = old_lp[:copy_len].to(TRAIN_DEVICE)
 
                 timer.start("microbatch_loss_backward")
                 loss, loss_metadata = grpo_microbatch_train_step(new_log_prob, mb_response_mask,

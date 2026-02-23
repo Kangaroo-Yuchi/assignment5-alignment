@@ -14,7 +14,7 @@ run() {
   echo "=== tbs=${tbs} epochs=${epochs} ==="
   uv run python cs336_alignment/impl/grpo_train.py \
     --checkpoint $CHECKPOINT \
-    --loss_type reinforce_with_baseline \
+    --loss_type grpo_clip \
     --n_steps 200 \
     --lr 1e-5 \
     --train_batch_size $tbs \
