@@ -396,42 +396,44 @@ def grpo_train( policy: PreTrainedModel,
                     optimizer.step()
                     optimizer.zero_grad()
                     timer.stop("optimizer_step")
-
-                    logger.info(f"Step {global_step}: loss={accumulated_loss:.4f}")
                     accumulated_loss = 0.0
-                    if global_step % EVALUATION_STEP == 0:
-                        logger.info(f"Running evaluation at step {global_step}...")
-                        timer.start("evaluation")
-                        load_policy_into_vllm_instance(policy, vllm_instance)
-                        step_mean_entropy = rollout_entropy_sum / rollout_entropy_count if rollout_entropy_count > 0 else None
-                        eval_metrics = evaluate_vllm(
-                            vllm_instance, r1_zero_reward_fn, valid_prompts, valid_ground_truths,
-                            EVAL_SAMPLING_PARAM, step_number=global_step, output_dir=output_dir, lr_tag=lr_tag,
-                            wall_clock_time=time.perf_counter() - training_start_time,
-                            mean_entropy=step_mean_entropy,
-                            mean_response_length=rollout_mean_length,
-                        )
-                        timer.stop("evaluation")
-                        logger.info(f"Evaluation results - accuracy: {eval_metrics['accuracy']:.4f}, format_reward: {eval_metrics['format_reward']:.4f}")
-                        eval_history.append((global_step, eval_metrics['accuracy'], eval_metrics['format_reward']))
 
+        grpo_step = i + 1
+        logger.info(f"GRPO step {grpo_step}: mean_reward={metadata['mean_reward']:.4f}")
         timer.log_step_summary(i)
 
-    # Final evaluation
-    logger.info("Running final evaluation...")
-    timer.start("final_evaluation")
-    load_policy_into_vllm_instance(policy, vllm_instance)
-    final_step_mean_entropy = rollout_entropy_sum / rollout_entropy_count if rollout_entropy_count > 0 else None
-    final_metrics = evaluate_vllm(
-        vllm_instance, r1_zero_reward_fn, valid_prompts, valid_ground_truths,
-        EVAL_SAMPLING_PARAM, step_number=global_step, output_dir=output_dir, lr_tag=lr_tag,
-        wall_clock_time=time.perf_counter() - training_start_time,
-        mean_entropy=final_step_mean_entropy,
-        mean_response_length=rollout_mean_length,
-    )
-    timer.stop("final_evaluation")
-    eval_history.append((global_step, final_metrics['accuracy'], final_metrics['format_reward']))
-    logger.info(f"Final evaluation - accuracy: {final_metrics['accuracy']:.4f}, format_reward: {final_metrics['format_reward']:.4f}")
+        if grpo_step % EVALUATION_STEP == 0:
+            logger.info(f"Running evaluation at GRPO step {grpo_step}...")
+            timer.start("evaluation")
+            load_policy_into_vllm_instance(policy, vllm_instance)
+            step_mean_entropy = rollout_entropy_sum / rollout_entropy_count if rollout_entropy_count > 0 else None
+            eval_metrics = evaluate_vllm(
+                vllm_instance, r1_zero_reward_fn, valid_prompts, valid_ground_truths,
+                EVAL_SAMPLING_PARAM, step_number=grpo_step, output_dir=output_dir, lr_tag=lr_tag,
+                wall_clock_time=time.perf_counter() - training_start_time,
+                mean_entropy=step_mean_entropy,
+                mean_response_length=rollout_mean_length,
+            )
+            timer.stop("evaluation")
+            logger.info(f"Evaluation results - accuracy: {eval_metrics['accuracy']:.4f}, format_reward: {eval_metrics['format_reward']:.4f}")
+            eval_history.append((grpo_step, eval_metrics['accuracy'], eval_metrics['format_reward']))
+
+    # Final evaluation (if last step wasn't already evaluated)
+    if n_grpo_steps % EVALUATION_STEP != 0:
+        logger.info("Running final evaluation...")
+        timer.start("final_evaluation")
+        load_policy_into_vllm_instance(policy, vllm_instance)
+        final_step_mean_entropy = rollout_entropy_sum / rollout_entropy_count if rollout_entropy_count > 0 else None
+        final_metrics = evaluate_vllm(
+            vllm_instance, r1_zero_reward_fn, valid_prompts, valid_ground_truths,
+            EVAL_SAMPLING_PARAM, step_number=n_grpo_steps, output_dir=output_dir, lr_tag=lr_tag,
+            wall_clock_time=time.perf_counter() - training_start_time,
+            mean_entropy=final_step_mean_entropy,
+            mean_response_length=rollout_mean_length,
+        )
+        timer.stop("final_evaluation")
+        eval_history.append((n_grpo_steps, final_metrics['accuracy'], final_metrics['format_reward']))
+        logger.info(f"Final evaluation - accuracy: {final_metrics['accuracy']:.4f}, format_reward: {final_metrics['format_reward']:.4f}")
 
     timer.log_final_summary()
 
