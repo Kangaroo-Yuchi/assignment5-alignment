@@ -332,16 +332,19 @@ def grpo_train( policy: PreTrainedModel,
                     timer.stop("microbatch_pad")
 
                     timer.start("microbatch_forward")
-                    fwd_out = get_response_log_probs(policy, mb_input_ids, mb_labels, True)
+                    fwd_out = get_response_log_probs(policy, mb_input_ids, mb_labels, False)
                     new_log_prob = fwd_out['log_probs']
-                    # Accumulate mean response-token entropy for logging (first epoch only to avoid bias)
-                    if _ == 0 and 'token_entropy' in fwd_out:
-                        ent = fwd_out['token_entropy']  # (mb, seq_len)
-                        mask = mb_response_mask.float()
-                        valid_tokens = mask.sum().item()
-                        if valid_tokens > 0:
-                            rollout_entropy_sum += (ent * mask).sum().item()
-                            rollout_entropy_count += int(valid_tokens)
+                    # Accumulate mean response-token entropy for logging (first epoch, first microbatch only)
+                    if _ == 0 and micro_start == train_batch_start:
+                        with torch.no_grad():
+                            ent_out = get_response_log_probs(policy, mb_input_ids, mb_labels, True)
+                            ent = ent_out['token_entropy']
+                            mask = mb_response_mask.float()
+                            valid_tokens = mask.sum().item()
+                            if valid_tokens > 0:
+                                rollout_entropy_sum += (ent * mask).sum().item()
+                                rollout_entropy_count += int(valid_tokens)
+                            del ent_out, ent
                     timer.stop("microbatch_forward")
 
                     # Align old_log_probs to this microbatch's padded seq_len
